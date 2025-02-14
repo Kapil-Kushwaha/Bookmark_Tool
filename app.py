@@ -111,11 +111,12 @@ def embed_all_links(service="google"):
 def get_summary(url, service="google", base_url="http://localhost:11434"):
     """Get summary and tags of webpage content using specified service."""
     try:
+        print(f"Calculating summary for URL: {url} using service: {service}")
         response = requests.get(url, timeout=10)
         soup = BeautifulSoup(response.content, 'html.parser')
         content = soup.get_text()
         content_cleaned = ' '.join(content.split())[:1000]
-        prompt = f"""Here is the website content: {content_cleaned}. Now summarize it in 20 words or less. Then generate no more than 10 tags that would be relevant to this content. Provide the output in JSON format following this schema: {{"summary": "string", "tags": ["string", ...]}}"""
+        prompt = f"""Here is the website content: {content_cleaned}. Now summarize it in 40 words or less. Then generate no more than 20 tags that would be relevant to this content. Provide the output with no other text except this JSON format following this schema: {{"summary": "string", "tags": ["string", ...]}}"""
         if service == "google":
             # Google API summary logic using genai library
             genai.configure(api_key=config['google_api_key'])
@@ -125,9 +126,6 @@ def get_summary(url, service="google", base_url="http://localhost:11434"):
             
             if response.candidates and response.candidates[0].content:
                 result = json.loads(response.candidates[0].content.parts[0].text)
-                summary = result.get('summary', '').strip()
-                tags = result.get('tags', [])
-                return summary, tags
             else:
                 print("Failed to generate summary and tags")
                 return "No summary found", []
@@ -146,17 +144,26 @@ def get_summary(url, service="google", base_url="http://localhost:11434"):
             if response.status_code == 200:
                 content = response.json().get("response", "").strip()
                 try:
-                    result = json.loads(content)
-                    summary = result.get('summary', '').strip()
-                    tags = result.get('tags', [])
-                    return summary, tags
+                    json_pattern = re.compile(r'\{.*\}')
+                    content = json_pattern.search(content)
+                    if content:
+                        result = json.loads(content.group(0))
+                    else:
+                        print("No JSON found in content ",content)
+                        return "No summary found", []
+                    
                 except json.JSONDecodeError:
-                    print("Failed to parse JSON from response")
+                    print("Failed to parse JSON from response ",content)
                     return "No summary found", []
             else:
                 print(f"Error: {response.status_code}")
                 print(response.text)
                 return  "No summary found", []
+            
+
+        summary = result.get('summary', '').strip()
+        tags = result.get('tags', [])
+        return summary, tags
     except Exception as e:
         print(f"Error processing URL {url}: {str(e)}")
         return "Error generating summary", []
@@ -208,6 +215,26 @@ def semantic_search(query_vector: np.ndarray, document_vectors: List[np.ndarray]
         for i, doc_vector in enumerate(document_vectors)
     ]
     return sorted(similarities, key=lambda x: x[1], reverse=True)
+
+def add_new_bookmark(bookmark_url, existing_bookmarks):
+    """Add a new bookmark to the existing bookmarks list."""
+    base_url = re.search(r'https?://([^/]+)', bookmark_url)
+    base_url = base_url.group(1) if base_url else bookmark_url
+    summary, tags = get_summary(bookmark_url, service=config['service'], base_url=config['ollama_base_url'])
+    embedding_input = f"{bookmark_url} {summary} {' '.join(tags)}"
+    embedding_bookmark = np.array(get_embedding(embedding_input, service=config['service'], base_url=config['ollama_base_url']))
+
+    new_bookmark = {
+        'link': bookmark_url,
+        'summary': summary,
+        'embedding': embedding_bookmark,
+        'base_url': base_url,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'tags': tags
+    }
+    existing_bookmarks.append(new_bookmark)
+    write_bookmarks(existing_bookmarks)
+    return new_bookmark
 
 @app.route('/')
 def index():
@@ -274,25 +301,11 @@ def add_bookmark():
         existing_bookmarks = read_bookmarks()
         for bookmark_url in bookmarks_list:
             bookmark_url = bookmark_url.strip()
-            if bookmark_url:
-                base_url = re.search(r'https?://([^/]+)', bookmark_url)
-                base_url = base_url.group(1) if base_url else bookmark_url
-                summary, tags = get_summary(bookmark_url, service=config['service'], base_url=config['ollama_base_url'])
-                embedding_input = f"{bookmark_url} {summary} {' '.join(tags)}"
-                embedding_bookmark = np.array(get_embedding(embedding_input, service=config['service'], base_url=config['ollama_base_url']))
-                if not any(b['link'] == bookmark_url for b in existing_bookmarks):
-                    new_bookmark = {
-                        'link': bookmark_url,
-                        'summary': summary,
-                        'embedding': embedding_bookmark,
-                        'base_url': base_url,
-                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'tags': tags
-                    }
-                    existing_bookmarks.append(new_bookmark)
-        write_bookmarks(existing_bookmarks)
+            if bookmark_url and not any(b['link'] == bookmark_url for b in existing_bookmarks):
+                add_new_bookmark(bookmark_url, existing_bookmarks)
         return redirect(url_for('index'))
     return render_template('add_bookmark.html')
+
 
 @app.route('/config', methods=['GET', 'POST'])
 def config_page():
@@ -310,7 +323,7 @@ def config_page():
         save_config(config)
     return render_template('config.html', config=config)
 
-@app.route('/embed_all_links', methods=['POST'])
+@app.route('/embed_all_links_route', methods=['GET'])
 def embed_all_links_route():
     """Endpoint to trigger embedding of all links."""
     embed_all_links(service=config['service'])
@@ -434,22 +447,7 @@ def api_add_bookmark():
         if any(b['link'] == bookmark_url for b in existing_bookmarks):
             return jsonify({"error": "Bookmark already exists"}), 400
 
-        base_url = re.search(r'https?://([^/]+)', bookmark_url)
-        base_url = base_url.group(1) if base_url else bookmark_url
-        summary, tags = get_summary(bookmark_url, service=config['service'], base_url=config['ollama_base_url'])
-        embedding_input = f"{bookmark_url} {summary} {' '.join(tags)}"
-        embedding_bookmark = np.array(get_embedding(embedding_input, service=config['service'], base_url=config['ollama_base_url']))
-
-        new_bookmark = {
-            'link': bookmark_url,
-            'summary': summary,
-            'embedding': embedding_bookmark,
-            'base_url': base_url,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'tags': tags
-        }
-        existing_bookmarks.append(new_bookmark)
-        write_bookmarks(existing_bookmarks)
+        new_bookmark = add_new_bookmark(bookmark_url, existing_bookmarks)
 
         return jsonify({
             "message": "Bookmark added successfully",
