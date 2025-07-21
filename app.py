@@ -9,12 +9,43 @@ from bs4 import BeautifulSoup
 import json
 import numpy as np
 from typing import List
-import google.generativeai as genai
-from ratelimit import limits, sleep_and_retry
 import os
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
+from urllib.parse import quote
+
 
 # Flask application initialization
 app = Flask(__name__)
+
+from flask_sqlalchemy import SQLAlchemy
+
+app.config['SECRET_KEY'] = 'your-secret-key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+
+db = SQLAlchemy(app)
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(100), unique=True, nullable=False)
+    password_hash = db.Column(db.String(100), nullable=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
 
 # Configuration file and default settings
 CONFIG_FILE = 'config.json'
@@ -49,51 +80,29 @@ if not os.path.exists('bookmarks.csv'):
 # Load configuration
 config = load_config()
     
-def get_embedding(corpus, service="google", base_url="http://localhost:11434"):
-    """Get embedding for given text using specified service."""
-    if service == "google":
-        # Google API embedding logic
-        api_key = config['google_api_key']
-        url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
-        if not api_key:
-            raise ValueError("Google API Key not found in configuration")
-        params = {
-            "key": api_key
-        }
-        headers = {
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "models/text-embedding-004",
-            "content": {
-                "parts": [{
-                    "text": corpus
-                }]
+def get_embedding(text, service='jina'):
+    if not text.strip():
+        print("Skipped empty text for embedding.")
+        return []
+
+    if service == 'jina':
+        try:
+            url = "https://r.jina.ai/v1/embeddings"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "input": [text],
+                "model": "jina-embedding-b-en-v1"
             }
-        }
-        response = requests.post(url, params=params, headers=headers, json=data)
-        if response.status_code == 200:
-            embedding = response.json().get("embedding", [{}]).get("values")
-            return np.array(embedding)
-        else:
-            print(f"Error: {response.status_code}")
-            print(response.text)
+            print("Sending to Jina:", text[:150])
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            embedding = response.json()["data"][0]["embedding"]
+            return embedding
+        except Exception as e:
+            print("Error while embedding with jina:", e)
             return []
-    else:
-        # Ollama API embedding logic
-        url = f"{base_url}/api/embed"
-        payload = {
-            "model": "all-minilm",
-            "input": corpus
-        }
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            result = response.json()
-            embedding = result.get('embeddings', [[]])[0]
-            return np.array(embedding)
-        else:
-            print(f"Error: {response.status_code}")
-            return []
+
+
         
 def embed_all_links(service="google"):
     """Update embeddings for all bookmarks if necessary."""
@@ -106,72 +115,21 @@ def embed_all_links(service="google"):
             bookmark['embedding'] = embedding
         write_bookmarks(bookmarks)
 
-@sleep_and_retry
-@limits(calls=14, period=1)
-def get_summary(url, service="google", base_url="http://localhost:11434"):
-    """Get summary and tags of webpage content using specified service."""
+def get_summary(url):
     try:
-        print(f"Calculating summary for URL: {url} using service: {service}")
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        content = soup.get_text()
-        content_cleaned = ' '.join(content.split())[:1000]
-        prompt = f"""Here is the website content: {content_cleaned}. Now summarize it in 40 words or less. Then generate no more than 20 tags that would be relevant to this content. Provide the output with no other text except this JSON format following this schema: {{"summary": "string", "tags": ["string", ...]}}"""
-        if service == "google":
-            # Google API summary logic using genai library
-            genai.configure(api_key=config['google_api_key'])
-            model = genai.GenerativeModel('gemini-1.5-flash',
-                                          generation_config={"response_mime_type": "application/json"})
-            response = model.generate_content(prompt)
-            
-            if response.candidates and response.candidates[0].content:
-                result = json.loads(response.candidates[0].content.parts[0].text)
-            else:
-                print("Failed to generate summary and tags")
-                return "No summary found", []
-        else:
-            # Ollama API summary logic
-            url = f"{base_url}/api/generate"
-            headers = {
-                "Content-Type": "application/json"
-            }
-            data = {
-                "model": config['ollama_llm_model'],
-                "prompt": prompt,
-                "stream": False
-            }
-            response = requests.post(url, headers=headers, json=data)
-            if response.status_code == 200:
-                content = response.json().get("response", "").strip()
-                try:
-                    json_pattern = re.compile(r'\{.*\}')
-                    content = json_pattern.search(content)
-                    if content:
-                        result = json.loads(content.group(0))
-                    else:
-                        print("No JSON found in content ",content)
-                        return "No summary found", []
-                    
-                except json.JSONDecodeError:
-                    print("Failed to parse JSON from response ",content)
-                    return "No summary found", []
-            else:
-                print(f"Error: {response.status_code}")
-                print(response.text)
-                return  "No summary found", []
-            
-
-        summary = result.get('summary', '').strip()
-        tags = result.get('tags', [])
-        return summary, tags
+        api_url = f"https://r.jina.ai/{quote(url, safe='')}"
+        print(f"Jina Summary API called: {api_url}")
+        response = requests.get(api_url)
+        response.raise_for_status()
+        return response.text.strip()  # returns full HTML summary string
     except Exception as e:
-        print(f"Error processing URL {url}: {str(e)}")
-        return "Error generating summary", []
+        print(f"Error while summarizing with Jina AI: {e}")
+        return "Summary not available."
 
 def read_bookmarks():
     """Read bookmarks from CSV file."""
     bookmarks = []
-    with open('bookmarks.csv', 'r') as f:
+    with open("bookmarks.csv", "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         next(reader)  # Skip header
         for row in reader:
@@ -188,7 +146,7 @@ def read_bookmarks():
 
 def write_bookmarks(bookmarks):
     """Write bookmarks to CSV file."""
-    with open('bookmarks.csv', 'w', newline='') as f:
+    with open("bookmarks.csv", "w", newline='', encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(['link', 'summary', 'embedding', 'base_url', 'timestamp', 'tags'])
         for bookmark in bookmarks:
@@ -217,13 +175,18 @@ def semantic_search(query_vector: np.ndarray, document_vectors: List[np.ndarray]
     return sorted(similarities, key=lambda x: x[1], reverse=True)
 
 def add_new_bookmark(bookmark_url, existing_bookmarks):
-    """Add a new bookmark to the existing bookmarks list."""
     base_url = re.search(r'https?://([^/]+)', bookmark_url)
     base_url = base_url.group(1) if base_url else bookmark_url
-    summary, tags = get_summary(bookmark_url, service=config['service'], base_url=config['ollama_base_url'])
-    embedding_input = f"{bookmark_url} {summary} {' '.join(tags)}"
-    embedding_bookmark = np.array(get_embedding(embedding_input, service=config['service'], base_url=config['ollama_base_url']))
 
+    if config['service'] == 'jina':
+        summary = get_summary(bookmark_url)
+        tags = []  # Optional: you can leave tags empty or implement logic later
+
+        embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary}", service='jina'))
+    else:
+        summary, tags = get_summary(bookmark_url, service=config['service'], base_url=config.get('ollama_base_url', ''))
+        embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary} {' '.join(tags)}", service=config['service'], base_url=config.get('ollama_base_url', '')))
+    
     new_bookmark = {
         'link': bookmark_url,
         'summary': summary,
@@ -236,7 +199,9 @@ def add_new_bookmark(bookmark_url, existing_bookmarks):
     write_bookmarks(existing_bookmarks)
     return new_bookmark
 
+
 @app.route('/')
+@login_required
 def index():
     """Render index page with paginated bookmarks."""
     bookmarks = read_bookmarks()
@@ -249,6 +214,7 @@ def index():
     return render_template('index.html', bookmarks=paginated_bookmarks, page=page, total_pages=total_pages)
 
 @app.route('/remove/<path:link>')
+@login_required
 def remove_bookmark(link):
     """Remove a bookmark and redirect to index."""
     bookmarks = read_bookmarks()
@@ -257,6 +223,7 @@ def remove_bookmark(link):
     return redirect(url_for('index'))
 
 @app.route('/update_bookmark', methods=['POST'])
+@login_required
 def update_bookmark():
     """Update a bookmark's information."""
     data = request.json
@@ -270,6 +237,7 @@ def update_bookmark():
     return jsonify({"success": False})
 
 @app.route('/search')
+@login_required
 def search():
     """Perform semantic search on bookmarks."""
     query = request.args.get('query', '')
@@ -293,6 +261,7 @@ def search():
                            total_pages=total_pages)
 
 @app.route('/add_bookmark', methods=['GET', 'POST'])
+@login_required
 def add_bookmark():
     """Add new bookmarks."""
     if request.method == 'POST':
@@ -330,6 +299,7 @@ def embed_all_links_route():
     return jsonify({"message": "All links have been re-embedded successfully."}), 200
 
 @app.route('/test_models', methods=['GET'])
+@login_required
 def test_models():
     """Test embedding and summary generation."""
     try:
@@ -461,6 +431,56 @@ def api_add_bookmark():
         }), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+        if User.query.filter_by(email=email).first():
+            return "Email already exists"
+        user = User(email=email)
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        return redirect(url_for('login'))
+    return render_template('signup.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+        user = User.query.filter_by(email=email).first()
+        if user and user.check_password(password):
+            login_user(user)
+            return redirect(url_for('index'))
+        return "Invalid credentials"
+    return render_template('login.html')
+
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+
+with app.app_context():
+    db.create_all()
+
+with app.app_context():
+    db.create_all()
+    # Clear all sessions on app restart
+    from flask_login import logout_user
+    @app.before_request
+    def clear_session_on_restart():
+        if not current_user.is_authenticated:
+            logout_user()
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
