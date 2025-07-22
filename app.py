@@ -122,10 +122,10 @@ def get_summary(url):
         response = requests.get(api_url)
         response.raise_for_status()
         summary = response.text.strip()
-        return summary, []  # 👈 RETURNING a tuple: (summary, tags)
+        return summary, []  # ✅ FIXED: Return tuple (summary, tags)
     except Exception as e:
         print(f"Error while summarizing with Jina AI: {e}")
-        return "Summary not available.", []
+        return "Summary not available.", []  # ✅ FIXED
 
 def read_bookmarks():
     """Read bookmarks from CSV file."""
@@ -179,7 +179,8 @@ def add_new_bookmark(bookmark_url, existing_bookmarks):
     base_url = re.search(r'https?://([^/]+)', bookmark_url)
     base_url = base_url.group(1) if base_url else bookmark_url
 
-    summary, tags = get_summary(bookmark_url)
+    summary, tags = get_summary(bookmark_url)  # ✅ FIXED
+
 
 
     embedding_input = f"{bookmark_url} {summary} {' '.join(tags)}"
