@@ -178,17 +178,12 @@ def add_new_bookmark(bookmark_url, existing_bookmarks):
     base_url = re.search(r'https?://([^/]+)', bookmark_url)
     base_url = base_url.group(1) if base_url else bookmark_url
 
-    if config['service'] == 'jina':
-        summary = get_summary(bookmark_url)
-        tags = []  # Optional: you can leave tags empty or implement logic later
+    summary = get_summary(bookmark_url)
+    tags = []
 
-        embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary} {' '.join(tags)}", service=config['service']))
-    else:
-        summary = get_summary(bookmark_url)
-        tags = []
+    embedding_input = f"{bookmark_url} {summary} {' '.join(tags)}"
+    embedding_bookmark = np.array(get_embedding(embedding_input, service=config['service']))
 
-        embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary} {' '.join(tags)}", service=config['service'], base_url=config.get('ollama_base_url', '')))
-    
     new_bookmark = {
         'link': bookmark_url,
         'summary': summary,
