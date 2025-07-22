@@ -137,7 +137,7 @@ def read_bookmarks():
                 bookmarks.append({
                     'link': row[0],
                     'summary': row[1],
-                    'embedding': np.array(ast.literal_eval(row[2])),
+                    'embedding': np.array(ast.literal_eval(row[2])) if row[2] else np.array([]),
                     'base_url': row[3],
                     'timestamp': row[4],
                     'tags': ast.literal_eval(row[5]) if row[5] else []
@@ -182,7 +182,13 @@ def add_new_bookmark(bookmark_url, existing_bookmarks):
     tags = []
 
     embedding_input = f"{bookmark_url} {summary} {' '.join(tags)}"
-    embedding_bookmark = np.array(get_embedding(embedding_input, service=config['service']))
+    embedding_raw = get_embedding(embedding_input, service=config['service'])
+    if not embedding_raw:
+           print("Warning: empty embedding, skipping this bookmark.")
+           return  # skip saving
+
+    embedding_bookmark = np.array(embedding_raw)
+
 
     new_bookmark = {
         'link': bookmark_url,
