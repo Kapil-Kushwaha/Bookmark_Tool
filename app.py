@@ -182,7 +182,7 @@ def add_new_bookmark(bookmark_url, existing_bookmarks):
         summary = get_summary(bookmark_url)
         tags = []  # Optional: you can leave tags empty or implement logic later
 
-        embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary}", service='jina'))
+        embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary} {' '.join(tags)}", service=config['service']))
     else:
         summary = get_summary(bookmark_url)
         tags = []
@@ -244,7 +244,7 @@ def search():
     """Perform semantic search on bookmarks."""
     query = request.args.get('query', '')
     bookmarks = read_bookmarks()
-    query_embedding = get_embedding(query, service=config['service'], base_url=config['ollama_base_url'])
+    query_embedding = get_embedding(query, service=config['service'])
     corpus_embeddings = [b['embedding'] for b in bookmarks]
     hits = semantic_search(query_embedding, corpus_embeddings)
     sorted_bookmarks = [
@@ -306,7 +306,7 @@ def test_models():
     """Test embedding and summary generation."""
     try:
         test_text = "This is a test sentence for embedding."
-        embedding = get_embedding(test_text, service=config['service'], base_url=config['ollama_base_url'])
+        embedding = get_embedding(test_text, service=config['service'])
         if not isinstance(embedding, np.ndarray) or embedding.size == 0:
             return jsonify({"message": "Embedding test failed. Check your configuration and try again."}), 400
         test_url = "https://example.com"
@@ -358,7 +358,7 @@ def api_search():
         per_page = data.get('per_page', 10)
 
         bookmarks = read_bookmarks()
-        query_embedding = np.array(get_embedding(query, service=config['service'], base_url=config['ollama_base_url']))
+        query_embedding = np.array(get_embedding(query, service=config['service']))
         
         corpus_embeddings = [b['embedding'] for b in bookmarks]
         hits = semantic_search(query_embedding, corpus_embeddings)
