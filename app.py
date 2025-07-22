@@ -184,7 +184,9 @@ def add_new_bookmark(bookmark_url, existing_bookmarks):
 
         embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary}", service='jina'))
     else:
-        summary, tags = get_summary(bookmark_url)
+        summary = get_summary(bookmark_url)
+        tags = []
+
         embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary} {' '.join(tags)}", service=config['service'], base_url=config.get('ollama_base_url', '')))
     
     new_bookmark = {
