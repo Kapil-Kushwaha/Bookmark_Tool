@@ -12,3 +12,5 @@ EXPOSE 5000
 
 # Update the CMD to bind to all interfaces
 CMD ["flask", "run", "--host", "0.0.0.0"]
+
+#Finish

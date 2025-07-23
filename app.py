@@ -121,11 +121,10 @@ def get_summary(url):
         print(f"Jina Summary API called: {api_url}")
         response = requests.get(api_url)
         response.raise_for_status()
-        summary = response.text.strip()
-        return summary, []  # ✅ FIXED: Return tuple (summary, tags)
+        return response.text.strip()  # returns full HTML summary string
     except Exception as e:
         print(f"Error while summarizing with Jina AI: {e}")
-        return "Summary not available.", []  # ✅ FIXED
+        return "Summary not available."
 
 def read_bookmarks():
     """Read bookmarks from CSV file."""
@@ -138,7 +137,7 @@ def read_bookmarks():
                 bookmarks.append({
                     'link': row[0],
                     'summary': row[1],
-                    'embedding': np.array(ast.literal_eval(row[2])) if row[2] else np.array([]),
+                    'embedding': np.array(ast.literal_eval(row[2])),
                     'base_url': row[3],
                     'timestamp': row[4],
                     'tags': ast.literal_eval(row[5]) if row[5] else []
@@ -179,19 +178,15 @@ def add_new_bookmark(bookmark_url, existing_bookmarks):
     base_url = re.search(r'https?://([^/]+)', bookmark_url)
     base_url = base_url.group(1) if base_url else bookmark_url
 
-    summary, tags = get_summary(bookmark_url)  # ✅ FIXED
+    if config['service'] == 'jina':
+        summary = get_summary(bookmark_url)
+        tags = []  # Optional: you can leave tags empty or implement logic later
 
-
-
-    embedding_input = f"{bookmark_url} {summary} {' '.join(tags)}"
-    embedding_raw = get_embedding(embedding_input, service=config['service'])
-    if not embedding_raw:
-           print("Warning: empty embedding, skipping this bookmark.")
-           return  # skip saving
-
-    embedding_bookmark = np.array(embedding_raw)
-
-
+        embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary}", service='jina'))
+    else:
+        summary, tags = get_summary(bookmark_url, service=config['service'], base_url=config.get('ollama_base_url', ''))
+        embedding_bookmark = np.array(get_embedding(f"{bookmark_url} {summary} {' '.join(tags)}", service=config['service'], base_url=config.get('ollama_base_url', '')))
+    
     new_bookmark = {
         'link': bookmark_url,
         'summary': summary,
@@ -247,7 +242,7 @@ def search():
     """Perform semantic search on bookmarks."""
     query = request.args.get('query', '')
     bookmarks = read_bookmarks()
-    query_embedding = get_embedding(query, service=config['service'])
+    query_embedding = get_embedding(query, service=config['service'], base_url=config['ollama_base_url'])
     corpus_embeddings = [b['embedding'] for b in bookmarks]
     hits = semantic_search(query_embedding, corpus_embeddings)
     sorted_bookmarks = [
@@ -309,7 +304,7 @@ def test_models():
     """Test embedding and summary generation."""
     try:
         test_text = "This is a test sentence for embedding."
-        embedding = get_embedding(test_text, service=config['service'])
+        embedding = get_embedding(test_text, service=config['service'], base_url=config['ollama_base_url'])
         if not isinstance(embedding, np.ndarray) or embedding.size == 0:
             return jsonify({"message": "Embedding test failed. Check your configuration and try again."}), 400
         test_url = "https://example.com"
@@ -361,7 +356,7 @@ def api_search():
         per_page = data.get('per_page', 10)
 
         bookmarks = read_bookmarks()
-        query_embedding = np.array(get_embedding(query, service=config['service']))
+        query_embedding = np.array(get_embedding(query, service=config['service'], base_url=config['ollama_base_url']))
         
         corpus_embeddings = [b['embedding'] for b in bookmarks]
         hits = semantic_search(query_embedding, corpus_embeddings)
